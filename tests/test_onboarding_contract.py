@@ -72,6 +72,34 @@ class TestOnboardingContract(unittest.TestCase):
         self.assertLess(self.grok.index("search_posts_all"), self.grok.index("X_BEARER_TOKEN"))
         self.assertIn("setup --store-key", self.grok)
 
+    def test_first_run_flows_do_not_invoke_preflight(self):
+        """Status and permission inspection are not a required first-run beat.
+        `--preflight` stays an opt-in inspector; Step 0 must not dump `.env`."""
+        self.assertNotIn("--preflight", self.modal)
+        self.assertNotIn("--preflight", self.prose)
+        self.assertNotIn("--preflight", self.grok)
+        self.assertIn("Do not run it as a required first-run step", self.step0)
+        self.assertIn("Do not print `.env` contents or credential values", self.step0)
+
+    def test_first_run_gate_defers_to_step0_credential_sources(self):
+        """The cheap SETUP_COMPLETE grep is not itself a first-run verdict."""
+        start = self.text.index("**FIRST-RUN GATE")
+        end = self.text.index("\n## Step 0: First-Run Setup Wizard")
+        gate = self.text[start:end]
+        self.assertIn("FIRST_RUN_DETECTED", gate)
+        self.assertIn("A missing `.env` alone is not a first run", gate)
+        self.assertIn("That section decides first-run from every credential source", gate)
+
+    def test_complete_does_not_treat_setup_stdout_as_source_list(self):
+        self.assertIn(
+            "Setup stdout is what this run installed, not the runtime source list",
+            self.prose,
+        )
+        self.assertIn(
+            "Setup stdout is what this run installed, not the runtime source list",
+            self.grok,
+        )
+
     def test_hard_gate_step0_before_step1(self):
         """The erosion-resistant gate that orphaned the wizard in #659 is restored."""
         self.assertIn("ALWAYS execute Step 0 BEFORE Step 1", self.step0)
@@ -253,16 +281,20 @@ class TestOnboardingContract(unittest.TestCase):
 
     def test_offer_copy_names_comments_and_auto_enrichment(self):
         """The Step 4 offer states comments are part of the default value and
-        describes the key's real Reddit/YouTube roles (empty-path Reddit
-        search backfill + yt-dlp transcript backstop) — not rate-limit
+        describes the key's real Reddit/YouTube roles (Reddit search backfill
+        below the 5-item floor + yt-dlp transcript backstop), not rate-limit
         escalation or SC Reddit comment enrichment on the free path."""
         before = self._modal_before_step5()
         self.assertIn("comments", before.lower())
         self.assertIn("Reddit", before)
         self.assertIn("YouTube", before)
         self.assertIn("10,000 free calls", before)
-        # Empty-only search backup (not transport/rate-limit escalation).
-        self.assertIn("returns no items", before)
+        # Floor-triggered search backfill with the 0 opt-out (not
+        # transport/rate-limit escalation, and no longer empty-only).
+        self.assertIn("fewer than 5 items", before)
+        self.assertIn("LAST30DAYS_REDDIT_SC_MIN_ITEMS=0", before)
+        self.assertNotIn("returns no items", before)
+        self.assertNotIn("empty-only", before)
         self.assertNotIn("when they hit rate limits", before)
         # Free-path comments are shreddit; do not claim SC comment preference.
         self.assertNotIn("prefers ScrapeCreators for Reddit", before)
@@ -273,7 +305,8 @@ class TestOnboardingContract(unittest.TestCase):
         step5 = self._modal_step5()
         self.assertNotIn("public + ScrapeCreators", step5)
         self.assertNotIn("Reddit auto-enrichment", step5)
-        self.assertIn("empty-only", step5)
+        self.assertIn("fewer than 5 items", step5)
+        self.assertNotIn("empty-only", step5)
 
     def test_recommended_tier_writes_comments_by_default(self):
         """Comments are the DEFAULT: the recommended option enables YouTube +
@@ -302,6 +335,34 @@ class TestOnboardingContract(unittest.TestCase):
         for slice_name, slice_text in (("modal", self.modal), ("prose", self.prose)):
             self.assertIn("Chrome", slice_text, f"{slice_name} cookie copy omits Chrome")
             self.assertIn("Always Allow", slice_text, f"{slice_name} omits the Keychain cue")
+
+    def test_cookie_consent_explains_future_reads_before_the_answer(self):
+        prompts = (
+            self.modal.split('Question: "Auto setup', 1)[1].split("Options (", 1)[0],
+            self.prose.split("Otherwise ask. Example:", 1)[1].split("**Wait for the answer.**", 1)[0],
+        )
+        for prompt in prompts:
+            with self.subTest(prompt=prompt):
+                self.assertIn("later research runs", prompt)
+                self.assertIn("browser names", prompt)
+                self.assertIn("may prompt again", prompt)
+                self.assertIn("Always Allow", prompt)
+                self.assertIn("BROWSER_CONSENT=false", prompt)
+                self.assertIn("FROM_BROWSER=off", prompt)
+                self.assertIn("On macOS", prompt)
+                self.assertIn("Windows and Linux", prompt)
+                self.assertIn("Windows Firefox", prompt)
+
+    def test_cookie_persistence_contract_matches_each_host_flow(self):
+        for flow in (self.modal, self.prose):
+            with self.subTest(flow=flow[:30]):
+                self.assertIn("complete cookies", flow)
+                self.assertIn("comma-separated", flow)
+                self.assertIn("never saves cookie values", flow)
+                self.assertNotIn("one-time macOS Keychain prompt", flow)
+                self.assertNotIn("only when it is Firefox or Safari", flow)
+                self.assertNotIn("only a Firefox/Safari winner", flow)
+                self.assertNotIn("Chrome never re-", flow)
 
     def test_fda_reframed_as_safari_fallback(self):
         """Full Disk Access is framed as Safari-only, not the default path."""

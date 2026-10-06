@@ -1,6 +1,5 @@
 import socket
 import urllib.error
-from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -13,7 +12,6 @@ from lib import (
     pipeline,
     reddit,
     reddit_listing,
-    reddit_rss,
     render,
     schema,
     youtube_yt,
@@ -151,22 +149,8 @@ def test_reddit_nested_worker_propagates_failure_capture(mock_urlopen, _mock_sle
     assert failures[-1].outcome_state == schema.RATE_LIMITED
 
 
-def _reddit_429(url="https://www.reddit.com/search.rss"):
+def _reddit_429(url="https://www.reddit.com/svc/shreddit/search/"):
     return urllib.error.HTTPError(url, 429, "Too Many Requests", {}, None)
-
-
-@patch("lib.http.time.sleep")
-@patch("lib.http.urllib.request.urlopen")
-def test_reddit_rss_fanout_propagates_failure_capture(mock_urlopen, _mock_sleep):
-    # get_text launders the 429 into None; the sink is what must survive the
-    # ThreadPoolExecutor hop into the feed workers (issue #899).
-    mock_urlopen.side_effect = _reddit_429()
-
-    with http.capture_failures() as failures:
-        posts = reddit_rss.search_rss("test topic", depth="quick")
-
-    assert posts == []
-    assert failures[-1].outcome_state == schema.RATE_LIMITED
 
 
 @patch("lib.http.time.sleep")
@@ -363,9 +347,10 @@ def test_pipeline_records_both_mode_semantic_leg_failure_as_partial():
         "title": "Search result",
         "url": "https://example.com/result",
         "snippet": "Raw search evidence",
-        # Relative so the item stays inside the run window; a fixed date fell out
-        # of the 30-day window and turned PARTIAL into ERROR once the calendar moved.
-        "date": (datetime.now(timezone.utc) - timedelta(days=5)).date().isoformat(),
+        # Inside the pinned as_of window below. A wall-clock relative date
+        # (today-5) falls outside 2026-07-21..2026-08-20 once the calendar
+        # moves past late August, and the failure then records as ERROR.
+        "date": "2026-08-15",
         "relevance": 0.8,
         "why_relevant": "Perplexity Search result",
         "engagement": {},
@@ -387,9 +372,6 @@ def test_pipeline_records_both_mode_semantic_leg_failure_as_partial():
                 "PERPLEXITY_API_KEY": "pplx-test",
             },
             depth="quick",
-            # Pin both ends of the window. The fixture item is dated 2026-08-10,
-            # so an unpinned window drops it once the wall clock moves 30 days
-            # past that date and the failure then records as ERROR, not PARTIAL.
             lookback_days=30,
             as_of_date="2026-08-20",
             requested_sources=["perplexity"],
